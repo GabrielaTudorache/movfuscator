@@ -67,11 +67,13 @@ class ScratchMemory:
         ScratchVariable("mul_accum", "quad", 0, "64-bit accumulator (8 bytes)"),
     ]
 
-    # Variables for division (repeated subtraction)
+    # Variables for division
     DIVISION_VARIABLES: List[ScratchVariable] = [
         ScratchVariable("div_remainder", "long", 0, "division remainder"),
+        ScratchVariable("div_dividend_lo", "long", 0, "division dividend low (EAX)"),
         ScratchVariable("div_divisor", "long", 0, "division divisor"),
         ScratchVariable("div_quotient", "long", 0, "division quotient"),
+        ScratchVariable("div_counter", "long", 0, "division loop counter"),
     ]
 
     # Variables for shift operations
