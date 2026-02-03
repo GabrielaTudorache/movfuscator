@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movfuscator Visualizer</title>
+    <style>
+        :root {
+            --bg-primary: #1e1e2e;
+            --bg-secondary: #2d2d3f;
+            --bg-tertiary: #3d3d5c;
+            --text-primary: #cdd6f4;
+            --text-secondary: #a6adc8;
+            --text-muted: #6c7086;
+            --accent-blue: #89b4fa;
+            --accent-green: #a6e3a1;
+            --accent-orange: #fab387;
+            --accent-red: #f38ba8;
+            --accent-purple: #cba6f7;
+            --accent-yellow: #f9e2af;
+            --accent-teal: #94e2d5;
+            --accent-gray: #9399b2;
+            --accent-lavender: #b4befe;
+            --border-color: #45475a;
+            --selection-bg: #45475a;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ---- Header ---- */
+
+        header {
+            background-color: var(--bg-secondary);
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .logo {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: var(--accent-blue);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        select, button {
+            font-family: inherit;
+            font-size: 0.85rem;
+            padding: 6px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        select:hover, button:hover {
+            border-color: var(--accent-blue);
+        }
+
+        .btn-primary {
+            background-color: var(--accent-blue);
+            color: var(--bg-primary);
+            border-color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--accent-teal);
+            border-color: var(--accent-teal);
+        }
+
+        .shortcut-hint {
+            font-family: inherit;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            background: var(--bg-tertiary);
+            padding: 3px 7px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* ---- Workspace (2-panel layout) ---- */
+
+        .workspace {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background-color: var(--bg-secondary);
+            padding: 8px 16px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .hint {
+            font-size: 0.72rem;
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+            color: var(--text-muted);
+        }
+
+        .panel-body {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .source-panel {
+            width: 40%;
+            min-width: 280px;
+            border-right: 1px solid var(--border-color);
+        }
+
+        .detail-panel {
+            flex: 1;
+            min-width: 350px;
+        }
+
+        /* ---- Source panel: editor ---- */
+
+        .source-input {
+            width: 100%;
+            height: 100%;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: none;
+            padding: 12px 16px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+        }
+
+        .source-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .source-input.hidden { display: none; }
+
+        /* ---- Source panel: annotated view ---- */
+
+        .annotated-source {
+            display: none;
+            padding: 4px 0;
+        }
+
+        .annotated-source.visible { display: block; }
+
+        /* Edit button (hidden until translation) */
+        #edit-btn {
+            display: none;
+            font-size: 0.7rem;
+            padding: 3px 10px;
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        #edit-btn.visible { display: inline-block; }
+
+        /* ---- Source lines ---- */
+
+        .source-line {
+            display: flex;
+            align-items: baseline;
+            padding: 1px 12px 1px 0;
+            font-size: 0.85rem;
+            line-height: 1.7;
+            border-left: 3px solid transparent;
+            transition: background-color 0.15s;
+        }
+
+        .source-line:not(.has-mapping) .line-text {
+            color: var(--text-muted);
+        }
+
+        .source-line.has-mapping {
+            cursor: pointer;
+        }
+
+        .source-line.has-mapping:hover {
+            background-color: var(--bg-secondary);
+        }
+
+        .source-line.selected {
+            background-color: var(--selection-bg);
+        }
+
+        .line-number {
+            color: var(--text-muted);
+            min-width: 32px;
+            text-align: right;
+            padding-right: 12px;
+            font-size: 0.75rem;
+            user-select: none;
+            flex-shrink: 0;
+        }
+
+        .line-text {
+            flex: 1;
+            white-space: pre;
+            min-width: 0;
+        }
+
+        .line-info {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            opacity: 0;
+            transition: opacity 0.15s;
+            margin-left: auto;
+            padding-left: 12px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .source-line.has-mapping:hover .line-info,
+        .source-line.selected .line-info {
+            opacity: 1;
+        }
+
+        /* Type-colored left borders */
+        .source-line[data-type="add"],
+        .source-line[data-type="sub"],
+        .source-line[data-type="inc"],
+        .source-line[data-type="dec"] { border-left-color: var(--accent-green); }
+
+        .source-line[data-type="xor"],
+        .source-line[data-type="or"],
+        .source-line[data-type="and"] { border-left-color: var(--accent-blue); }
+
+        .source-line[data-type="cmp"],
+        .source-line[data-type="test"] { border-left-color: var(--accent-purple); }
+
+        .source-line[data-type="jcc_signed"],
+        .source-line[data-type="jcc_unsigned"],
+        .source-line[data-type="jcc_equality"] { border-left-color: var(--accent-red); }
+
+        .source-line[data-type="mul"],
+        .source-line[data-type="div"] { border-left-color: var(--accent-orange); }
+
+        .source-line[data-type="passthrough"],
+        .source-line[data-type="nop"] { border-left-color: var(--accent-gray); }
+
+        .source-line[data-type="loop"] { border-left-color: var(--accent-yellow); }
+
+        .source-line[data-type="push"],
+        .source-line[data-type="pop"],
+        .source-line[data-type="lea"],
+        .source-line[data-type="leave"] { border-left-color: var(--accent-teal); }
+
+        .source-line[data-type="shl"],
+        .source-line[data-type="shr"] { border-left-color: var(--accent-lavender); }
+
+        /* ---- Detail panel: welcome ---- */
+
+        .welcome {
+            padding: 24px;
+            color: var(--text-secondary);
+            max-width: 560px;
+        }
+
+        .welcome h3 {
+            color: var(--text-primary);
+            font-size: 1rem;
+            margin-bottom: 12px;
+        }
+
+        .welcome p {
+            font-size: 0.82rem;
+            line-height: 1.7;
+            margin-bottom: 10px;
+            color: var(--text-muted);
+        }
+
+        .welcome ol, .welcome ul {
+            font-size: 0.82rem;
+            line-height: 1.8;
+            padding-left: 18px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+        }
+
+        .welcome li {
+            margin-bottom: 2px;
+        }
+
+        .welcome .hl {
+            color: var(--accent-blue);
+        }
+
+        .welcome .callout {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent-blue);
+            padding: 10px 14px;
+            border-radius: 0 6px 6px 0;
+            margin: 12px 0;
+            font-size: 0.8rem;
+            line-height: 1.7;
+        }
+
+        .welcome .callout strong {
+            color: var(--text-primary);
+        }
+
+        .no-selection {
+            padding: 24px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.82rem;
+        }
+
+        /* ---- Detail panel: selected instruction ---- */
+
+        .detail-content {
+            padding: 16px;
+        }
+
+        .selected-instruction {
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 4px solid var(--accent-blue);
+            margin-bottom: 16px;
+        }
+
+        .selected-instruction .instr-text {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .selected-instruction .instr-meta {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .selected-instruction .instr-desc {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-top: 6px;
+            line-height: 1.5;
+        }
+
+        /* ---- Pipeline (phase flow) ---- */
+
+        .pipeline {
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .pipeline::before {
+            content: '';
+            position: absolute;
+            left: 9px;
+            top: 16px;
+            bottom: 16px;
+            width: 2px;
+            background-color: var(--border-color);
+        }
+
+        .stage-label {
+            font-size: 0.65rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-muted);
+            padding: 8px 0 4px 18px;
+            position: relative;
+        }
+
+        .stage-label::before {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 50%;
+            width: 10px;
+            height: 1px;
+            background: var(--border-color);
+        }
+
+        .phase-item {
+            margin-bottom: 4px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .pipeline .phase-item::before {
+            content: '';
+            position: absolute;
+            left: -15px;
+            top: 14px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            border: 2px solid var(--bg-primary);
+            z-index: 1;
+        }
+
+        /* Pipeline node colors by phase category */
+        .pipeline .phase-item[data-cat="save_temps"]::before,
+        .pipeline .phase-item[data-cat="restore_temps"]::before { background-color: var(--accent-gray); }
+        .pipeline .phase-item[data-cat="load_operand"]::before { background-color: var(--accent-blue); }
+        .pipeline .phase-item[data-cat="init"]::before { background-color: #585b70; }
+        .pipeline .phase-item[data-cat="lut_lookup"]::before { background-color: var(--accent-green); }
+        .pipeline .phase-item[data-cat="carry_propagation"]::before { background-color: var(--accent-orange); }
+        .pipeline .phase-item[data-cat="update_flags"]::before { background-color: var(--accent-purple); }
+        .pipeline .phase-item[data-cat="write_result"]::before { background-color: var(--accent-blue); }
+        .pipeline .phase-item[data-cat="dispatch_table"]::before { background-color: var(--accent-red); }
+        .pipeline .phase-item[data-cat="condition_eval"]::before { background-color: var(--accent-yellow); }
+        .pipeline .phase-item[data-cat="indirect_jump"]::before { background-color: var(--accent-red); }
+        .pipeline .phase-item[data-cat="passthrough"]::before,
+        .pipeline .phase-item[data-cat="nop"]::before { background-color: #585b70; }
+        .pipeline .phase-item[data-cat="special"]::before { background-color: var(--accent-teal); }
+
+        .phase-header {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background-color 0.15s;
+        }
+
+        .phase-header:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        .phase-toggle {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+
+        .phase-item.expanded .phase-toggle {
+            transform: rotate(90deg);
+        }
+
+        .phase-name {
+            flex: 1;
+            font-size: 0.85rem;
+        }
+
+        .phase-count {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: var(--bg-primary);
+            padding: 1px 7px;
+            border-radius: 8px;
+        }
+
+        .phase-instructions {
+            display: none;
+            padding: 0 12px 8px 18px;
+            font-size: 0.82rem;
+        }
+
+        .phase-item.expanded .phase-instructions {
+            display: block;
+        }
+
+        .instruction-line {
+            padding: 2px 0;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+        }
+
+        .instruction-code {
+            flex-shrink: 0;
+        }
+
+        .instruction-annotation {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            font-style: italic;
+            white-space: nowrap;
+            opacity: 0.7;
+        }
+
+        /* ---- ASM syntax highlighting ---- */
+
+        .asm-register { color: var(--accent-blue); }
+        .asm-immediate { color: var(--accent-green); }
+        .asm-memory { color: var(--accent-orange); }
+        .asm-mnemonic { color: var(--text-primary); font-weight: 600; }
+        .asm-label { color: var(--accent-yellow); }
+        .asm-directive { color: var(--accent-gray); }
+
+        /* ---- Stats bar ---- */
+
+        .stats-bar {
+            background: var(--bg-secondary);
+            padding: 8px 20px;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            display: none;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .stats-bar.visible {
+            display: flex;
+        }
+
+        .stat-value {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .stat-value.green {
+            color: var(--accent-green);
+        }
+
+        .stats-bar .sep {
+            color: var(--border-color);
+        }
+
+        /* ---- Error ---- */
+
+        .error-message {
+            padding: 16px;
+            background: rgba(243, 139, 168, 0.1);
+            border: 1px solid var(--accent-red);
+            border-radius: 8px;
+            color: var(--accent-red);
+            margin: 16px;
+            font-size: 0.85rem;
+        }
+
+        /* ---- Scrollbar ---- */
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span>&#9881;</span>
+            <span>MOVFUSCATOR VISUALIZER</span>
+        </div>
+        <div class="controls">
+            <select id="sample-select">
+                <option value="">Load a sample...</option>
+            </select>
+            <button class="btn-primary" id="translate-btn">Translate</button>
+            <kbd class="shortcut-hint">Ctrl &#9166;</kbd>
+        </div>
+    </header>
+
+    <div class="workspace">
+        <div class="panel source-panel">
+            <div class="panel-header">
+                <span>Source</span>
+                <div class="panel-actions">
+                    <span class="hint" id="source-hint">x86 AT&amp;T syntax</span>
+                    <button id="edit-btn">Edit Source</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <textarea class="source-input" id="source-input" placeholder="Enter x86 AT&T syntax assembly here...
+
+Example:
+  .text
+  .global main
+  main:
+      movl $3, %eax
+      addl $5, %eax
+      int $0x80
+
+Or select a sample from the dropdown."></textarea>
+                <div class="annotated-source" id="annotated-source"></div>
+            </div>
+        </div>
+
+        <div class="panel detail-panel">
+            <div class="panel-header">
+                <span id="detail-title">About</span>
+                <span class="hint" id="detail-hint"></span>
+            </div>
+            <div class="panel-body" id="detail-container">
+                <div class="welcome">
+                    <h3>How the Movfuscator works</h3>
+                    <div class="callout">
+                        <strong>Key insight:</strong> The x86 MOV instruction is Turing-complete
+                        (Dolan, 2013). Any computation can be expressed using only MOV, by
+                        encoding operations as memory reads from precomputed lookup tables.
+                    </div>
+                    <p>This tool shows how each source instruction gets translated into
+                    a sequence of MOV-only instructions, step by step.</p>
+                    <ol>
+                        <li>Enter assembly or <span class="hl">load a sample</span></li>
+                        <li>Click <span class="hl">Translate</span> or press Ctrl+Enter</li>
+                        <li>Click any highlighted line to inspect its <span class="hl">translation phases</span></li>
+                    </ol>
+                    <p style="margin-top: 14px;">Each non-MOV instruction is translated through phases:</p>
+                    <ul>
+                        <li><span class="hl">Save temps</span> &mdash; back up registers to scratch memory</li>
+                        <li><span class="hl">Load operands</span> &mdash; move values into scratch variables</li>
+                        <li><span class="hl">LUT lookup</span> &mdash; compute result via 256&times;256 lookup tables</li>
+                        <li><span class="hl">Carry propagation</span> &mdash; propagate carry/borrow between bytes</li>
+                        <li><span class="hl">Update flags</span> &mdash; compute zero/comparison flags</li>
+                        <li><span class="hl">Write result</span> &mdash; store computed value to destination</li>
+                        <li><span class="hl">Restore temps</span> &mdash; restore backed-up registers</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="stats-bar" id="stats-bar"></footer>
+
+    <script>
+        // ---- Reference data ----
+
+        const SAMPLE_DESCRIPTIONS = {
+            '1':  'Comparison & branching',
+            '2':  'Factorial (MUL + LOOP)',
+            '3':  'Fibonacci (ADD + LOOP)',
+            '4':  'Tribonacci sequence',
+            '5':  'Longest run of 1-bits',
+            '6':  'Next power of 2 (SHL)',
+            '7':  'Sum of squares (MUL)',
+            '8':  'Array max & occurrences',
+            '9':  'Digit sum (DIV)',
+            '10': 'Two largest in array',
+            '11': 'Most frequent element',
+        };
+
+        const INSTRUCTION_TYPE_INFO = {
+            add:            'Arithmetic addition via byte-level LUT with carry propagation',
+            sub:            'Arithmetic subtraction via byte-level LUT with borrow propagation',
+            inc:            'Increment (+1) via addition LUT',
+            dec:            'Decrement (-1) via subtraction LUT',
+            xor:            'Bitwise XOR via byte-level LUT',
+            or:             'Bitwise OR via byte-level LUT',
+            and:            'Bitwise AND via byte-level LUT',
+            cmp:            'Comparison via subtraction LUT, sets scratch flags',
+            test:           'Bitwise test via AND LUT, sets scratch flags',
+            mul:            'Unsigned multiply via 8-bit LUT cascade with accumulator',
+            div:            'Unsigned divide via repeated subtraction with MOVs',
+            shl:            'Left shift via shl1 LUT, repeated per shift count',
+            shr:            'Right shift via shr1 LUT, repeated per shift count',
+            jcc_equality:   'Conditional jump (ZF): dispatch table indexed by is_zero LUT',
+            jcc_signed:     'Conditional jump (signed): dispatch table indexed by signed flag',
+            jcc_unsigned:   'Conditional jump (unsigned): dispatch table indexed by carry flag',
+            loop:           'Decrement ECX + conditional jump via dispatch table',
+            push:           'Push onto stack using MOV sequences',
+            pop:            'Pop from stack using MOV sequences',
+            lea:            'Load effective address using MOV sequences',
+            leave:          'Leave stack frame: MOV %ebp to %esp, then pop %ebp',
+            passthrough:    'Passed through unchanged (already a MOV, JMP, INT, CALL, or RET)',
+            nop:            'No-op: produces no output',
+        };
+
+        const PHASE_CATEGORY_INFO = {
+            save_temps:         'Save EAX, ECX, EDX to scratch memory before computation',
+            load_operand:       'Move source/destination operands into scratch variables',
+            init:               'Initialize carry, borrow, or accumulators to starting values',
+            lut_lookup:         'Core computation: index into a 256x256 precomputed lookup table',
+            carry_propagation:  'Propagate carry or borrow between byte-level results',
+            update_flags:       'Compute comparison/zero flags from the computed result',
+            write_result:       'Write the final result from scratch to the destination',
+            restore_temps:      'Restore saved registers (skipping the destination register)',
+            dispatch_table:     'Emit a 2-entry data table: [false_target, true_target]',
+            condition_eval:     'Read flags, apply is_zero/is_not_zero LUT, index dispatch table',
+            indirect_jump:      'Final indirect jump through the dispatch table',
+            special:            'Custom translation for a special case (e.g. XOR self-clear)',
+            passthrough:        'Instruction emitted as-is, no translation needed',
+            nop:                'No output generated',
+        };
+
+        const TYPE_COLORS = {
+            add: 'var(--accent-green)', sub: 'var(--accent-green)',
+            inc: 'var(--accent-green)', dec: 'var(--accent-green)',
+            xor: 'var(--accent-blue)', or: 'var(--accent-blue)', and: 'var(--accent-blue)',
+            cmp: 'var(--accent-purple)', test: 'var(--accent-purple)',
+            jcc_signed: 'var(--accent-red)', jcc_unsigned: 'var(--accent-red)', jcc_equality: 'var(--accent-red)',
+            mul: 'var(--accent-orange)', div: 'var(--accent-orange)',
+            passthrough: 'var(--accent-gray)', nop: 'var(--accent-gray)',
+            loop: 'var(--accent-yellow)',
+            push: 'var(--accent-teal)', pop: 'var(--accent-teal)',
+            lea: 'var(--accent-teal)', leave: 'var(--accent-teal)',
+            shl: 'var(--accent-lavender)', shr: 'var(--accent-lavender)',
+        };
+
+        // ---- State ----
+
+        let translationData = null;
+        let selectedMappingIndex = null;
+
+        // ---- DOM ----
+
+        const els = {
+            sourceInput:     document.getElementById('source-input'),
+            sampleSelect:    document.getElementById('sample-select'),
+            translateBtn:    document.getElementById('translate-btn'),
+            editBtn:         document.getElementById('edit-btn'),
+            sourceHint:      document.getElementById('source-hint'),
+            annotatedSource: document.getElementById('annotated-source'),
+            detailTitle:     document.getElementById('detail-title'),
+            detailHint:      document.getElementById('detail-hint'),
+            detailContainer: document.getElementById('detail-container'),
+            statsBar:        document.getElementById('stats-bar'),
+        };
+
+        // ---- Init ----
+
+        loadSamples();
+
+        els.translateBtn.addEventListener('click', translate);
+        els.sampleSelect.addEventListener('change', loadSelectedSample);
+        els.sourceInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) translate();
+        });
+        els.editBtn.addEventListener('click', showEditor);
+
+        // ---- API calls ----
+
+        async function loadSamples() {
+            try {
+                const resp = await fetch('/samples');
+                const data = await resp.json();
+                data.samples.forEach(name => {
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    const desc = SAMPLE_DESCRIPTIONS[name];
+                    opt.textContent = desc ? `${name}. ${desc}` : `Sample ${name}`;
+                    els.sampleSelect.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('Failed to load samples:', e);
+            }
+        }
+
+        async function loadSelectedSample() {
+            const name = els.sampleSelect.value;
+            if (!name) return;
+            try {
+                const resp = await fetch(`/samples/${name}`);
+                if (resp.ok) {
+                    els.sourceInput.value = await resp.text();
+                    translate();
+                }
+            } catch (e) {
+                console.error('Failed to load sample:', e);
+            }
+        }
+
+        async function translate() {
+            const source = els.sourceInput.value;
+            if (!source.trim()) return;
+
+            els.translateBtn.disabled = true;
+            els.translateBtn.textContent = 'Translating...';
+            els.detailContainer.innerHTML = '<div class="no-selection">Translating...</div>';
+
+            try {
+                const resp = await fetch('/translate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source })
+                });
+
+                const data = await resp.json();
+
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+
+                translationData = data;
+                selectedMappingIndex = null;
+
+                showAnnotatedView(source, data.mappings);
+                renderStats(data.statistics);
+
+                // Prompt user to select
+                els.detailTitle.textContent = 'Details';
+                els.detailHint.textContent = '';
+                els.detailContainer.innerHTML = '<div class="no-selection">Select a highlighted line to inspect its translation</div>';
+
+                // Auto-select first non-passthrough instruction
+                const first = data.mappings.findIndex(m => m.type !== 'passthrough' && m.type !== 'nop');
+                if (first >= 0) selectMapping(first);
+
+            } catch (e) {
+                showError(e.message);
+            } finally {
+                els.translateBtn.disabled = false;
+                els.translateBtn.textContent = 'Translate';
+            }
+        }
+
+        function showError(msg) {
+            els.detailContainer.innerHTML = `<div class="error-message">${escapeHtml(msg)}</div>`;
+            els.detailTitle.textContent = 'Error';
+            els.detailHint.textContent = '';
+        }
+
+        // ---- View management ----
+
+        function showAnnotatedView(source, mappings) {
+            els.sourceInput.classList.add('hidden');
+            els.annotatedSource.classList.add('visible');
+            els.editBtn.classList.add('visible');
+            els.sourceHint.textContent = 'click a line to inspect';
+            renderAnnotatedSource(source, mappings);
+        }
+
+        function showEditor() {
+            els.sourceInput.classList.remove('hidden');
+            els.annotatedSource.classList.remove('visible');
+            els.editBtn.classList.remove('visible');
+            els.sourceHint.textContent = 'x86 AT&T syntax';
+            els.sourceInput.focus();
+        }
+
+        // ---- Rendering ----
+
+        function renderAnnotatedSource(source, mappings) {
+            const lines = source.split('\n');
+            const lineToMapping = {};
+            mappings.forEach((m, i) => { lineToMapping[m.source_line] = i; });
+
+            let html = '';
+            lines.forEach((line, i) => {
+                const lineNum = i + 1;
+                const mi = lineToMapping[lineNum];
+                const hasMapping = mi !== undefined;
+                const m = hasMapping ? mappings[mi] : null;
+
+                if (hasMapping) {
+                    html += `<div class="source-line has-mapping" data-type="${m.type}" data-mapping-index="${mi}" onclick="selectMapping(${mi})">
+                        <span class="line-number">${lineNum}</span>
+                        <span class="line-text">${highlightAsm(line) || '&nbsp;'}</span>
+                        <span class="line-info">${m.total_mov_count} MOVs</span>
+                    </div>`;
+                } else {
+                    html += `<div class="source-line">
+                        <span class="line-number">${lineNum}</span>
+                        <span class="line-text">${highlightAsm(line) || '&nbsp;'}</span>
+                    </div>`;
+                }
+            });
+
+            els.annotatedSource.innerHTML = html;
+        }
+
+        function selectMapping(index) {
+            selectedMappingIndex = index;
+            const mapping = translationData.mappings[index];
+
+            // Highlight selected line
+            document.querySelectorAll('.source-line.has-mapping').forEach(el => {
+                el.classList.toggle('selected', parseInt(el.dataset.mappingIndex) === index);
+            });
+
+            // Scroll into view
+            const sel = els.annotatedSource.querySelector('.source-line.selected');
+            if (sel) sel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+            renderPhases(mapping);
+        }
+
+        function renderPhases(mapping) {
+            const typeDesc = INSTRUCTION_TYPE_INFO[mapping.type] || '';
+            const typeColor = TYPE_COLORS[mapping.type] || 'var(--accent-blue)';
+
+            els.detailTitle.textContent = 'Translation';
+            els.detailHint.textContent = mapping.type;
+
+            if (!mapping.phases.length) {
+                els.detailContainer.innerHTML = `
+                    <div class="detail-content">
+                        <div class="selected-instruction" style="border-left-color: ${typeColor}">
+                            <div class="instr-text">${highlightAsm(mapping.source_text)}</div>
+                            <div class="instr-meta">No translation phases (${mapping.type})</div>
+                            ${typeDesc ? `<div class="instr-desc">${escapeHtml(typeDesc)}</div>` : ''}
+                        </div>
+                    </div>`;
+                return;
+            }
+
+            // Group phases into pipeline stages
+            const stageLabels = {
+                input: 'Input',
+                compute: 'Compute',
+                output: 'Output',
+                control: 'Control Flow',
+            };
+            const categoryToStage = {
+                save_temps: 'input', load_operand: 'input',
+                init: 'compute', lut_lookup: 'compute', carry_propagation: 'compute', special: 'compute',
+                update_flags: 'output', write_result: 'output', restore_temps: 'output',
+                passthrough: 'output', nop: 'output',
+                dispatch_table: 'control', condition_eval: 'control', indirect_jump: 'control',
+            };
+
+            let phasesHtml = '';
+            let lastStage = '';
+
+            mapping.phases.forEach((p, i) => {
+                const stage = categoryToStage[p.category] || 'compute';
+                if (stage !== lastStage) {
+                    phasesHtml += `<div class="stage-label">${stageLabels[stage] || stage}</div>`;
+                    lastStage = stage;
+                }
+
+                phasesHtml += `
+                <div class="phase-item${i === 0 ? ' expanded' : ''}" data-phase="${i}" data-cat="${p.category}">
+                    <div class="phase-header" onclick="togglePhase(this)">
+                        <span class="phase-toggle">&#9656;</span>
+                        <span class="phase-name">${escapeHtml(p.name)}</span>
+                        <span class="phase-count">${p.instruction_count}</span>
+                    </div>
+                    <div class="phase-instructions">
+                        ${p.instructions.map(instr => renderAnnotatedInstruction(instr)).join('')}
+                    </div>
+                </div>`;
+            });
+
+            els.detailContainer.innerHTML = `
+                <div class="detail-content">
+                    <div class="selected-instruction" style="border-left-color: ${typeColor}">
+                        <div class="instr-text">${highlightAsm(mapping.source_text)}</div>
+                        <div class="instr-meta">${mapping.total_mov_count} MOVs across ${mapping.phases.length} phases</div>
+                        ${typeDesc ? `<div class="instr-desc">${escapeHtml(typeDesc)}</div>` : ''}
+                    </div>
+                    <div class="pipeline">
+                        ${phasesHtml}
+                    </div>
+                </div>`;
+        }
+
+        function renderAnnotatedInstruction(instr) {
+            const annotation = annotateInstruction(instr);
+            if (annotation) {
+                return `<div class="instruction-line"><span class="instruction-code">${highlightAsm(instr)}</span><span class="instruction-annotation">// ${escapeHtml(annotation)}</span></div>`;
+            }
+            return `<div class="instruction-line"><span class="instruction-code">${highlightAsm(instr)}</span></div>`;
+        }
+
+        function togglePhase(header) {
+            header.parentElement.classList.toggle('expanded');
+        }
+
+        function renderStats(stats) {
+            els.statsBar.classList.add('visible');
+            els.statsBar.innerHTML = `
+                <span><span class="stat-value">${stats.total_source_instructions}</span> source instructions</span>
+                <span class="sep">&rarr;</span>
+                <span><span class="stat-value">${stats.total_output_instructions}</span> MOVs</span>
+                <span class="sep">&middot;</span>
+                <span><span class="stat-value green">${stats.average_expansion_ratio}&times;</span> expansion</span>
+            `;
+        }
+
+        // ---- Instruction annotation engine ----
+        //
+        // Table-driven: each rule is [regex, annotation].
+        // Annotation can be a string or a function(match) → string.
+        // First matching rule wins. Educational annotations explain *why*
+        // each MOV exists, not just what it does.
+
+        const ANNOTATION_RULES = [
+            // --- Section directives (emitted around dispatch tables / address tables) ---
+            [/^\.section\s+\.data\b/, 'enter .data section - tables and address lists live here, not in the instruction stream'],
+            [/^\.section\s+\.text\b/, 'return to .text section - executable instructions resume here'],
+            [/^\.data\b/, 'enter .data section - tables and address lists live here, not in the instruction stream'],
+            [/^\.text\b/, 'return to .text section - executable instructions resume here'],
+            [/^\.long\s+([^\s,]+)/, m => `table entry → ${m[1]} (address stored as a 32-bit word)`],
+
+            // --- Save/restore scratch registers ---
+            // The movfuscator uses EAX, ECX, EDX to index into LUTs (the
+            // "movzbl (%row_ptr,%col,1)" pattern). Their original values must
+            // be preserved around each translated instruction.
+            [/^movl\s+%(e[acd]x),\s+save_\1$/, m =>
+                `save ${m[1].toUpperCase()} to memory - will be clobbered during LUT computation`],
+            [/^movl\s+save_(e[acd]x),\s+%\1$/, m =>
+                `restore ${m[1].toUpperCase()} to its pre-computation value`],
+
+            // --- Load operands into fixed scratch locations ---
+            // Regardless of where operands originally live (register, memory,
+            // immediate), they're copied into scratch_a/scratch_b so the LUT
+            // machinery can access them uniformly.
+            [/,\s+scratch_a$/, 'copy operand input → scratch_a (uniform first input for LUT machinery)'],
+            [/,\s+scratch_b$/, 'copy operand input → scratch_b (uniform second input for LUT machinery)'],
+
+            // --- Initialize carry/borrow for multi-byte arithmetic ---
+            // A 32-bit ADD is done as four 8-bit additions with carry chaining.
+            // The first byte has no incoming carry (0); INC/DEC set it to 1.
+            [/\$0,\s+scratch_c$/, 'reset carry to 0 - no incoming carry for the lowest byte'],
+            [/\$1,\s+scratch_c$/, 'set carry to 1 - INC/DEC is ADD/SUB with a carry-in of 1'],
+
+            // --- 2D LUT: select row pointer (step 1 of table[A][B]) ---
+            // Each 2D LUT is 256 pointers to 256-byte rows. This step loads
+            // the row pointer for operand A's byte value, so the next step
+            // can index into that row with operand B's byte value.
+            [/\b(\w+)_row_ptrs\(/, m => {
+                const info = {
+                    add:       'add[A][B] = low byte of A+B',
+                    carry:     'carry[A][B] = carry-out bit from A+B',
+                    sub:       'sub[A][B] = low byte of A−B',
+                    borrow:    'borrow[A][B] = borrow bit from A−B',
+                    xor:       'xor[A][B] = A XOR B',
+                    or:        'or[A][B] = A OR B',
+                    and:       'and[A][B] = A AND B',
+                    je:        'eq[A][B] = 1 if A equals B, else 0',
+                    jb:        'below[A][B] = 1 if A < B unsigned',
+                    jl_signed: 'less[A][B] = 1 if A < B signed',
+                    mul8_lo:   'mul_lo[A][B] = low byte of AxB',
+                    mul8_hi:   'mul_hi[A][B] = high byte of AxB',
+                };
+                return `select LUT row for byte A - ${info[m[1]] || m[1]}`;
+            }],
+
+            // --- 2D LUT: read column (step 2 - the actual computation!) ---
+            // This single memory read IS the computation. Instead of executing
+            // ADD/XOR/CMP, the result is simply looked up: table[A][B] = answer.
+            [/^movzbl\s+\(%[a-zA-Z0-9]+,\s*%[a-zA-Z0-9]+,\s*1\)/,
+                'KEY STEP - read table[A][B]; this one memory load IS the computation'],
+
+            // --- 1D LUT lookups (single-input transforms) ---
+            // Simpler 256-entry tables for boolean tests or bit manipulation.
+            [/is_not_zero_lut/, 'is_not_zero[x] → 1 if x≠0, else 0 (negated zero test)'],
+            [/is_zero_lut/,     'is_zero[x] → 1 if x=0, else 0 (for computing Zero Flag)'],
+            [/shl1_carry_lut/,  'shl1_carry[x] → high bit of x (the bit that shifts out)'],
+            [/shl1_lut/,        'shl1[x] → x<<1 mod 256 (one step of a multi-bit shift)'],
+            [/shr1_carry_lut/,  'shr1_carry[x] → low bit of x (the bit that shifts out)'],
+            [/shr1_lut/,        'shr1[x] → x>>1 (one step of a multi-bit shift)'],
+
+            // --- Byte extraction (32-bit → 8-bit for LUT indexing) ---
+            // LUTs are 256x256, so 32-bit values must be split into 4 bytes
+            // and each byte-pair processed independently through the table.
+            [/movzbl\s+scratch_([abr])\+?(\d*)/, m => {
+                const who = { a: 'operand A', b: 'operand B', r: 'result' };
+                const n = m[2] || '0';
+                const bits = ['0-7', '8-15', '16-23', '24-31'][+n] || '';
+                return `isolate byte ${n}${bits ? ` (bits ${bits})` : ''} of ${who[m[1]]} - LUTs handle one byte at a time`;
+            }],
+
+            // --- Store computed byte back to result ---
+            [/,\s+scratch_r\+?(\d*)$/, m =>
+                `store computed byte ${m[1] || '0'} of result - reassembled into 32-bit value when all 4 bytes are done`],
+
+            // --- Carry/borrow propagation between bytes ---
+            // Byte 0's carry feeds into byte 1's addition, byte 1's into byte 2's,
+            // etc. This chains four 8-bit LUT results into one correct 32-bit result.
+            [/movzbl\s+scratch_c/, 'load carry/borrow from previous byte - chains 8-bit results into 32-bit'],
+            [/,\s+scratch_c$/,     'save carry/borrow - feeds into the next byte\'s computation'],
+
+            // --- Per-byte comparison flags ---
+            [/,\s+scratch_(eq|lt)(\d)$/, m => {
+                const op = m[1] === 'eq' ? 'equals' : 'is less than';
+                return `does byte ${m[2]} of A ${op} byte ${m[2]} of B? (partial comparison)`;
+            }],
+
+            // --- Combined comparison flags (assemble per-byte results into final flag) ---
+            [/,\s+scratch_cmp_(eq|below|sign_lt)$/, m => {
+                const info = {
+                    eq:      'final equality (ZF) - all 4 bytes equal means the values are equal',
+                    below:   'final unsigned-below (CF) - drives JB/JA/JBE/JAE branches',
+                    sign_lt: 'final signed-less-than - drives JL/JG/JLE/JGE branches',
+                };
+                return `store ${info[m[1]]}`;
+            }],
+            [/movzbl\s+scratch_cmp_(eq|below|sign_lt)/, m => {
+                const info = {
+                    eq:      'equality (ZF) - will index dispatch table to pick branch target',
+                    below:   'unsigned-below (CF) - will index dispatch table to pick branch target',
+                    sign_lt: 'signed-less-than - will index dispatch table to pick branch target',
+                };
+                return `read ${info[m[1]]}`;
+            }],
+            [/movzbl\s+scratch_(eq|lt)(\d)/, m => {
+                const op = m[1] === 'eq' ? 'equality' : 'less-than';
+                return `load byte ${m[2]} ${op} result - will be combined into the final flag`;
+            }],
+
+            // --- Temporary storage ---
+            [/,\s+scratch_t\b(?:\+(\d+))?$/, m =>
+                `stash intermediate in scratch_t${m[1] ? `+${m[1]}` : ''} - reused by later LUT steps`],
+            [/,\s+scratch_t2\b(?:\+(\d+))?$/, m =>
+                `stash intermediate in scratch_t2${m[1] ? `+${m[1]}` : ''} - used by LEA/addressing sequences`],
+            [/movzbl\s+scratch_t\b(?:\+(\d+))?/, m =>
+                `retrieve stashed intermediate from scratch_t${m[1] ? `+${m[1]}` : ''} for the next step`],
+            [/movzbl\s+scratch_t2\b(?:\+(\d+))?/, m =>
+                `retrieve stashed intermediate from scratch_t2${m[1] ? `+${m[1]}` : ''} for the next step`],
+
+            // --- Conditional jump via dispatch table ---
+            // Conditional branches are replaced by a 2-entry data table
+            // [false_addr, true_addr]. A 0/1 flag indexes into this table,
+            // then an indirect jump executes - no actual branch needed.
+            [/^movl\s+_jcc_table_/,       'index dispatch table - flag (0 or 1) selects false_addr vs true_addr'],
+            [/^_jcc_table_\d+:/,           'dispatch table: two addresses [false_target, true_target]'],
+            [/,\s+scratch_jcc_target$/,    'save the winning address - the flag determined which entry was read'],
+            [/jmp\s+\*scratch_jcc_target/, 'indirect jump to chosen target - replaces the original conditional branch'],
+
+            // --- Multiplication (byte-by-byte LUT cascade) ---
+            // MUL is decomposed into bytexbyte products via mul8_lo/mul8_hi LUTs,
+            // then partial products are accumulated like long multiplication.
+            [/,\s+mul_op_a$/,  'save first multiply operand for byte-by-byte LUT cascade'],
+            [/,\s+mul_op_b$/,  'save second multiply operand for byte-by-byte LUT cascade'],
+            [/mul_accum/,      'multiply accumulator - partial products summed like long multiplication'],
+
+            // --- Division (repeated subtraction via MOVs) ---
+            // Without a DIV instruction, the movfuscator divides by subtracting
+            // the divisor from the dividend repeatedly, counting iterations.
+            [/div_(remainder|dividend|divisor|quotient|counter)/, m => {
+                const info = {
+                    remainder: 'what\'s left after each subtraction',
+                    dividend:  'value being divided - reduced by divisor each iteration',
+                    divisor:   'subtracted repeatedly from the dividend',
+                    quotient:  'counts successful subtractions = the division result',
+                    counter:   'loop counter for the repeated-subtraction algorithm',
+                };
+                return `division ${m[1]}: ${info[m[1]]}`;
+            }],
+
+            // --- Shift carry injection ---
+            [/shr_carry_inject/, 'carry injection map - routes carry bits between bytes during multi-byte shift'],
+
+            // --- Zero a register ---
+            [/^movl\s+\$0,\s+scratch_t2?$/, 'clear scratch temporary to 0 - prevents stale upper bytes when later writing only a single byte'],
+            [/^movl\s+\$0,\s+%(\w+)$/, m =>
+                `zero out ${m[1].toUpperCase()} - MOV $0 instead of XOR (only MOV is allowed)`],
+        ];
+
+        function annotateInstruction(instr) {
+            const t = instr.trim();
+            for (const [pattern, result] of ANNOTATION_RULES) {
+                const m = pattern.exec(t);
+                if (m) return typeof result === 'function' ? result(m) : result;
+            }
+            return '';
+        }
+
+        // ---- Utilities ----
+
+        // Placeholder-based syntax highlighter for AT&T x86 assembly.
+        // Each regex pass replaces matches with \x00N\x00 markers so that
+        // later passes can't accidentally re-match HTML from earlier passes.
+        // All markers are restored to their HTML spans at the end.
+
+        function highlightAsm(raw) {
+            if (!raw) return '';
+
+            let text = escapeHtml(raw);
+            const slots = [];
+            const mark = html => { slots.push(html); return `\x00${slots.length - 1}\x00`; };
+
+            // 1. Registers: %eax, %cl, etc. (unambiguous % prefix)
+            text = text.replace(/%([a-zA-Z0-9]+)/g, (_, r) =>
+                mark(`<span class="asm-register">%${r}</span>`));
+
+            // 2. Immediates: $5, $0xFF, $-1 (unambiguous $ prefix)
+            text = text.replace(/\$(-?(?:0x[0-9a-fA-F]+|\d+))/g, (_, v) =>
+                mark(`<span class="asm-immediate">$${v}</span>`));
+
+            // 3. Directives: .text, .global, .long
+            text = text.replace(/(\.[a-zA-Z_]\w*)/g, (_, d) =>
+                mark(`<span class="asm-directive">${d}</span>`));
+
+            // 4. Memory references with displacement: name(...)
+            text = text.replace(/([a-zA-Z_]\w*)(?=\s*\()/g, (_, n) =>
+                mark(`<span class="asm-memory">${n}</span>`));
+
+            // 5. Label definitions: main:
+            text = text.replace(/\b([a-zA-Z_]\w*)(?=\s*:)/g, (_, n) =>
+                mark(`<span class="asm-label">${n}</span>`));
+
+            // 6. Jump targets: bare identifier at end of line
+            text = text.replace(/(\s)([a-zA-Z_]\w*)\s*$/g, (_, ws, n) =>
+                ws + mark(`<span class="asm-label">${n}</span>`));
+
+            // 7. Memory labels: bare identifiers in operand positions
+            text = text.replace(/\b([a-zA-Z_]\w*)\b(?=[,\s]*$|,)/g, (_, n) =>
+                mark(`<span class="asm-memory">${n}</span>`));
+
+            // Restore all placeholders
+            return text.replace(/\x00(\d+)\x00/g, (_, i) => slots[i]);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

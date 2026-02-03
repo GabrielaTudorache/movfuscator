@@ -42,6 +42,7 @@ Aritmetica se face byte cu byte (4 bytes pentru valori pe 32 de biti) cu propaga
 ```
 src/
   main.py                CLI entry point
+  server.py              Server HTTP pentru visualizer
   lexer.py               Tokenizer pentru assembly AT&T
   parser.py              AST builder
   scratch.py             Layout-ul memoriei scratch (.data)
@@ -49,8 +50,11 @@ src/
   translator/
     core.py              Motorul de traducere (3700+ linii)
     output.py            Formatare output + includere selectiva LUT
+    metadata.py          Structuri pentru tracking-ul fazelor de traducere
     config.py            TranslatorConfig si TranslatorError
     __init__.py          API public translator
+
+visualizer.html          Interfata web pentru visualizer
 ```
 
 ### Fisiere generate (lookup tables)
@@ -134,6 +138,23 @@ bash test.sh
 ```
 
 Scriptul de test traduce fiecare program sample, compileaza atat originalul cat si versiunea tradusa cu `gcc -m32`, ruleaza ambele (cu timeout de 10 secunde) si compara exit code-urile si stdout-ul. De asemenea, verifica puritatea MOV - output-ul nu contine decat instructiuni MOV/JMP/INT/CALL/RET.
+
+### Visualizer
+
+Proiectul include un visualizer interactiv care arata pas cu pas cum fiecare instructiune este tradusa in secvente de MOV-uri.
+
+```bash
+python src/server.py [port]
+```
+
+Serverul porneste implicit pe portul 8080. Deschide `http://localhost:8080` in browser pentru a accesa visualizer-ul.
+
+**Functionalitati:**
+
+- Editor de cod assembly cu syntax highlighting
+- Selecteaza din sample-urile incluse sau scrie cod propriu
+- Click pe orice instructiune pentru a vedea fazele traducerii
+- Statistici: numar total de MOV-uri si factor de expansiune
 
 ## Ce merge si ce nu merge
 

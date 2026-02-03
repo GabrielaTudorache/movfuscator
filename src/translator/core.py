@@ -1,5 +1,7 @@
 """Translates x86 AST into MOV-only assembly AST."""
 
+from __future__ import annotations
+
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from parser import (
@@ -17,6 +19,7 @@ from parser import (
 )
 
 from .config import TranslatorConfig, TranslatorError
+from .metadata import InstructionMapping, TranslationMetadata, TranslationPhase
 
 
 class Translator:
@@ -138,6 +141,15 @@ class Translator:
         self._required_luts: Set[str] = set()
         self._dispatch, self._unsupported = self._build_dispatch_tables()
 
+        # --- Metadata tracking (enabled via translate_with_metadata) ---
+        self._track_metadata: bool = False
+        self._metadata: List[InstructionMapping] = []
+        self._current_phases: List[TranslationPhase] = []
+        self._current_phase_name: Optional[str] = None
+        self._current_phase_category: Optional[str] = None
+        self._phase_start_idx: int = 0
+        self._tracking_depth: int = 0
+
     def _build_dispatch_tables(
         self,
     ) -> Tuple[
@@ -221,10 +233,15 @@ class Translator:
         return dispatch, unsupported
 
     def _translate_nop(self, instr: Instruction) -> List[Statement]:
-        return []
+        statements: List[Statement] = []
+        self._phase(statements, "NOP (no output)", "nop")
+        return statements
 
     def _translate_passthrough(self, instr: Instruction) -> List[Statement]:
-        return [instr]
+        statements: List[Statement] = []
+        self._phase(statements, "Passthrough (emitted unchanged)", "passthrough")
+        statements.append(instr)
+        return statements
 
     @property
     def required_luts(self) -> Set[str]:
@@ -272,6 +289,163 @@ class Translator:
         self._required_luts = self._scan_required_luts(out)
         return out
 
+    def translate_with_metadata(
+        self, program: Program
+    ) -> Tuple[Program, TranslationMetadata]:
+        """Translate program and return phase-annotated metadata alongside."""
+
+        self._track_metadata = True
+        self._tracking_depth = 0
+        self._metadata = []
+        self._current_phases = []
+        self._current_phase_name = None
+        self._current_phase_category = None
+        self._phase_start_idx = 0
+
+        result = self.translate(program)
+
+        self._track_metadata = False
+        metadata = TranslationMetadata(mappings=list(self._metadata))
+        self._metadata = []
+        return result, metadata
+
+    def _phase(self, statements: List[Statement], name: str, category: str) -> None:
+        """Mark the start of a new translation phase.
+
+        Closes the previous phase (recording all statements appended since it
+        started) and opens a new one.
+        """
+
+        if not self._track_metadata or self._tracking_depth > 1:
+            return
+
+        self._close_phase(statements)
+        self._current_phase_name = name
+        self._current_phase_category = category
+        self._phase_start_idx = len(statements)
+
+    def _close_phase(self, statements: List[Statement]) -> None:
+        if not self._track_metadata or self._tracking_depth > 1:
+            return
+
+        if self._current_phase_name is None:
+            return
+
+        from .metadata import TranslationPhase
+
+        phase_stmts = statements[self._phase_start_idx :]
+        self._current_phases.append(
+            TranslationPhase(
+                name=self._current_phase_name,
+                category=self._current_phase_category or "",
+                statements=list(phase_stmts),
+            )
+        )
+
+        self._current_phase_name = None
+        self._current_phase_category = None
+
+    def _begin_instruction_tracking(self, instr: Instruction) -> None:
+        if not self._track_metadata:
+            return
+        self._current_phases = []
+        self._current_phase_name = None
+        self._current_phase_category = None
+        self._phase_start_idx = 0
+
+    def _end_instruction_tracking(
+        self, instr: Instruction, result: List[Statement]
+    ) -> None:
+        if not self._track_metadata:
+            return
+
+        from .metadata import InstructionMapping
+
+        self._close_phase(result)
+        mapping = InstructionMapping(
+            source_line=instr.line,
+            source_text=self._format_instruction_text(instr),
+            instruction_type=self._classify_instruction(instr),
+            phases=list(self._current_phases),
+            total_mov_count=sum(1 for s in result if isinstance(s, Instruction)),
+        )
+        self._metadata.append(mapping)
+        self._current_phases = []
+
+    @staticmethod
+    def _format_instruction_text(instr: Instruction) -> str:
+        from .output import OutputFormatter
+
+        fmt = OutputFormatter()
+        return fmt._format_instruction(instr).strip()
+
+    @staticmethod
+    def _classify_instruction(instr: Instruction) -> str:
+        m = instr.mnemonic.lower()
+        classify_map = {
+            "nop": "nop",
+            "mov": "passthrough",
+            "movl": "passthrough",
+            "movb": "passthrough",
+            "movw": "passthrough",
+            "movzbl": "passthrough",
+            "movsbl": "passthrough",
+            "movzwl": "passthrough",
+            "movswl": "passthrough",
+            "movzbw": "passthrough",
+            "movsbw": "passthrough",
+            "jmp": "passthrough",
+            "int": "passthrough",
+            "call": "passthrough",
+            "ret": "passthrough",
+            "add": "add",
+            "addl": "add",
+            "sub": "sub",
+            "subl": "sub",
+            "xor": "xor",
+            "xorl": "xor",
+            "or": "or",
+            "orl": "or",
+            "and": "and",
+            "andl": "and",
+            "inc": "inc",
+            "incl": "inc",
+            "dec": "dec",
+            "decl": "dec",
+            "cmp": "cmp",
+            "cmpl": "cmp",
+            "test": "test",
+            "testl": "test",
+            "mul": "mul",
+            "mull": "mul",
+            "div": "div",
+            "divl": "div",
+            "shl": "shl",
+            "shll": "shl",
+            "sal": "shl",
+            "sall": "shl",
+            "shr": "shr",
+            "shrl": "shr",
+            "push": "push",
+            "pushl": "push",
+            "pop": "pop",
+            "popl": "pop",
+            "lea": "lea",
+            "leal": "lea",
+            "leave": "leave",
+            "loop": "loop",
+        }
+        result = classify_map.get(m)
+        if result:
+            return result
+        if m in ("je", "jne", "jz", "jnz"):
+            return "jcc_equality"
+        if m in ("jl", "jle", "jg", "jge", "jnge", "jnl", "jng", "jnle"):
+            return "jcc_signed"
+        if m in ("jb", "jbe", "ja", "jae", "jc", "jnae", "jna", "jnbe", "jnb", "jnc"):
+            return "jcc_unsigned"
+        return "unknown"
+
     def _translate_statement(self, stmt: Statement) -> List[Statement]:
         if isinstance(stmt, Label):
             return [stmt]
@@ -289,7 +463,19 @@ class Translator:
 
         handler = self._dispatch.get(mnemonic)
         if handler is not None:
-            return handler(instr)
+            if not self._track_metadata:
+                return handler(instr)
+
+            self._tracking_depth += 1
+            try:
+                if self._tracking_depth == 1:
+                    self._begin_instruction_tracking(instr)
+                result = handler(instr)
+                if self._tracking_depth == 1:
+                    self._end_instruction_tracking(instr, result)
+                return result
+            finally:
+                self._tracking_depth -= 1
 
         unsupported = self._unsupported.get(mnemonic)
         if unsupported is not None:
@@ -315,6 +501,8 @@ class Translator:
             )
 
         statements: List[Statement] = []
+
+        self._phase(statements, "MOV %ebp, %esp", "special")
         statements.append(
             Instruction(
                 mnemonic="movl",
@@ -329,7 +517,14 @@ class Translator:
             size_suffix=OperandSize.LONG,
             line=instr.line,
         )
-        statements.extend(self._translate_pop(pop_ebp))
+
+        self._phase(statements, "POP %ebp (synthetic)", "lut_lookup")
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(self._translate_pop(pop_ebp))
+        finally:
+            self._tracking_depth = old_depth
         return statements
 
     def _emit_update_zf(self, statements: List[Statement], line: int) -> None:
@@ -645,25 +840,30 @@ class Translator:
         # Determine which register is the destination (if any)
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = (
             self._emit_save_temps(statements, line)
             if save_temps
             else self._temp_save_locations()
         )
 
+        self._phase(statements, "Load source operand to scratch_a", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, src, "scratch_a", line, save_map
         )
 
+        self._phase(statements, "Load destination operand to scratch_b", "load_operand")
         if isinstance(dst, Immediate):
             raise TranslatorError("ADD destination must be register or memory", line)
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
+        self._phase(statements, "Initialize carry to 0", "init")
         statements.append(mov("movb", Immediate(0), scratch_c))
 
         for byte_idx in range(4):
+            self._phase(statements, f"Byte {byte_idx}: Add via add_lut", "lut_lookup")
             a_byte = self._scratch_mem("scratch_a", byte_idx)
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
@@ -709,6 +909,11 @@ class Translator:
 
             # Calculate carry for next byte (if not last byte)
             if byte_idx < 3:
+                self._phase(
+                    statements,
+                    f"Byte {byte_idx}: Compute carry for next byte",
+                    "carry_propagation",
+                )
                 # Carry = carry_lut[a_byte][b_byte]
                 # But we also need to handle carry chain from adding previous carry
 
@@ -785,8 +990,10 @@ class Translator:
                 statements.append(mov("movb", Register("al"), scratch_c))
 
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
 
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -801,6 +1008,7 @@ class Translator:
             )
 
         if save_temps:
+            self._phase(statements, "Restore temporary registers", "restore_temps")
             self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -832,8 +1040,10 @@ class Translator:
         # Determine which register is the destination (if any)
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
+        self._phase(statements, "Load source operand to scratch_a", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, src, "scratch_a", line, save_map
         )
@@ -842,12 +1052,19 @@ class Translator:
             raise TranslatorError(
                 f"{op_name} destination must be register or memory", line
             )
+
+        self._phase(statements, "Load destination operand to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
         lut_row_ptrs = f"{lut_name}_row_ptrs"
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: {op_name} via {lut_name}_lut",
+                "lut_lookup",
+            )
             a_byte = self._scratch_mem("scratch_a", byte_idx)
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
@@ -867,8 +1084,10 @@ class Translator:
             statements.append(mov("movb", Register("al"), r_byte))
 
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
 
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -882,6 +1101,7 @@ class Translator:
                 line,
             )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -902,11 +1122,18 @@ class Translator:
             ):
                 self._validate_32bit_operands(instr, [src, dst], "XOR")
                 # XOR %reg, %reg => MOV $0, %reg
-                return [
+                statements: List[Statement] = []
+                self._phase(
+                    statements,
+                    "XOR self-clear: MOV $0 to register",
+                    "special",
+                )
+                statements.append(
                     Instruction(
                         mnemonic="movl", operands=[Immediate(0), dst], line=instr.line
                     )
-                ]
+                )
+                return statements
 
         return self._translate_logical_op(instr, "xor", "XOR")
 
@@ -943,17 +1170,26 @@ class Translator:
         # Determine which register is the destination (if any)
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         if isinstance(dst, Immediate):
             raise TranslatorError("INC destination must be register or memory", line)
+
+        self._phase(statements, "Load operand to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
+        self._phase(statements, "Initialize carry to 1 (increment)", "init")
         statements.append(mov("movb", Immediate(1), scratch_c))
 
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: Add carry via add_lut",
+                "lut_lookup",
+            )
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
 
@@ -977,6 +1213,11 @@ class Translator:
 
             # Calculate carry for next byte (if not last byte)
             if byte_idx < 3:
+                self._phase(
+                    statements,
+                    f"Byte {byte_idx}: Propagate carry to next byte",
+                    "carry_propagation",
+                )
                 # First get is_zero of result
                 is_zero = Memory(
                     displacement="is_zero_lut", index=Register("eax"), scale=1
@@ -997,8 +1238,10 @@ class Translator:
                 statements.append(mov("movb", Register("al"), scratch_c))
 
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
 
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -1012,6 +1255,7 @@ class Translator:
                 line,
             )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -1041,17 +1285,26 @@ class Translator:
         # Determine which register is the destination (if any)
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         if isinstance(dst, Immediate):
             raise TranslatorError("DEC destination must be register or memory", line)
+
+        self._phase(statements, "Load operand to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
+        self._phase(statements, "Initialize borrow to 1 (decrement)", "init")
         statements.append(mov("movb", Immediate(1), scratch_c))
 
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: Subtract borrow via sub_lut",
+                "lut_lookup",
+            )
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
 
@@ -1073,6 +1326,11 @@ class Translator:
 
             # Calculate borrow for next byte (if not last byte)
             if byte_idx < 3:
+                self._phase(
+                    statements,
+                    f"Byte {byte_idx}: Propagate borrow to next byte",
+                    "carry_propagation",
+                )
                 # Load original byte
                 statements.append(mov("movzbl", b_byte, Register("eax")))
 
@@ -1097,8 +1355,10 @@ class Translator:
 
         # 4. Update ZF (scratch_cmp_eq) from result
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, instr.line)
 
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -1112,6 +1372,7 @@ class Translator:
                 line,
             )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -1144,21 +1405,30 @@ class Translator:
         # Determine which register is the destination (if any)
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
+        self._phase(statements, "Load source operand to scratch_a", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, src, "scratch_a", line, save_map
         )
 
+        self._phase(statements, "Load destination operand to scratch_b", "load_operand")
         if isinstance(dst, Immediate):
             raise TranslatorError("SUB destination must be register or memory", line)
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
+        self._phase(statements, "Initialize borrow to 0", "init")
         statements.append(mov("movb", Immediate(0), scratch_c))
 
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: Subtract via sub_lut",
+                "lut_lookup",
+            )
             a_byte = self._scratch_mem("scratch_a", byte_idx)
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
@@ -1204,6 +1474,11 @@ class Translator:
 
             # Calculate borrow for next byte (if not last byte)
             if byte_idx < 3:
+                self._phase(
+                    statements,
+                    f"Byte {byte_idx}: Compute borrow for next byte",
+                    "carry_propagation",
+                )
                 # Borrow = borrow_lut[b_byte][a_byte] (1 if b < a)
                 # But we also need to handle borrow chain from subtracting previous borrow
 
@@ -1277,9 +1552,17 @@ class Translator:
                 statements.append(mov("movb", Register("al"), scratch_c))
 
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
+
+            self._phase(
+                statements,
+                "Update comparison flags (below, signed less-than)",
+                "update_flags",
+            )
             self._emit_cmp_below_and_sign_lt(statements, line)
 
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -1293,6 +1576,7 @@ class Translator:
                 line,
             )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -1317,12 +1601,15 @@ class Translator:
         def mov(mnemonic: str, src_op: Operand, dst_op: Operand) -> Instruction:
             return self._mov_instr(line, mnemonic, src_op, dst_op)
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
+        self._phase(statements, "Load source operand to scratch_a", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, src, "scratch_a", line, save_map
         )
 
+        self._phase(statements, "Load destination operand to scratch_b", "load_operand")
         if isinstance(dst, Immediate):
             raise TranslatorError("CMP destination must be register or memory", line)
         self._emit_store_operand_long_to_scratch(
@@ -1331,6 +1618,11 @@ class Translator:
 
         # 3. Per-byte comparison: equality and unsigned less-than
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: Equality check via je_lut",
+                "lut_lookup",
+            )
             a_byte = Memory(
                 displacement=f"scratch_a+{byte_idx}" if byte_idx > 0 else "scratch_a"
             )
@@ -1355,6 +1647,11 @@ class Translator:
             statements.append(mov("movb", Register("al"), eq_dest))
 
             # --- Unsigned less-than: jb_lut[dst_byte][src_byte] ---
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: Unsigned less-than via jb_lut",
+                "lut_lookup",
+            )
             statements.append(mov("movzbl", b_byte, Register("ecx")))
             jb_ptr = Memory(displacement="jb_row_ptrs", index=Register("ecx"), scale=4)
             statements.append(mov("movl", jb_ptr, Register("ecx")))
@@ -1365,6 +1662,11 @@ class Translator:
             lt_dest = Memory(displacement=f"scratch_lt{byte_idx}")
             statements.append(mov("movb", Register("al"), lt_dest))
 
+        self._phase(
+            statements,
+            "Byte 3: Signed less-than via jl_signed_lut (MSB)",
+            "lut_lookup",
+        )
         # 4. Signed less-than for byte 3 (MSB): jl_signed_lut[dst_byte3][src_byte3]
         b_byte3 = Memory(displacement="scratch_b+3")
         a_byte3 = Memory(displacement="scratch_a+3")
@@ -1381,6 +1683,11 @@ class Translator:
             mov("movb", Register("al"), Memory(displacement="scratch_t+1"))
         )
 
+        self._phase(
+            statements,
+            "Combine equality: AND all per-byte equality results",
+            "update_flags",
+        )
         # 5. Compute final equality: eq3 AND eq2 AND eq1 AND eq0
         # Start: and_lut[eq3][eq2]
         statements.append(
@@ -1417,6 +1724,11 @@ class Translator:
             mov("movb", Register("al"), Memory(displacement="scratch_cmp_eq"))
         )
 
+        self._phase(
+            statements,
+            "Cascade unsigned below: lt3 OR (eq3 AND (lt2 OR ...))",
+            "update_flags",
+        )
         # 6. Compute final unsigned less-than (cascading from LSB to MSB):
         # result = lt3 OR (eq3 AND (lt2 OR (eq2 AND (lt1 OR (eq1 AND lt0)))))
         #
@@ -1547,6 +1859,7 @@ class Translator:
             mov("movb", Register("al"), Memory(displacement="scratch_cmp_below"))
         )
 
+        self._phase(statements, "Compute signed less-than", "update_flags")
         # 7. Compute final signed less-than
         # Same cascade result (scratch_t+2), but OR with signed_lt3 (scratch_t+1)
         statements.append(
@@ -1575,6 +1888,7 @@ class Translator:
             mov("movb", Register("al"), Memory(displacement="scratch_cmp_sign_lt"))
         )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, None, save_map)
 
         return statements
@@ -1600,12 +1914,15 @@ class Translator:
             return self._mov_instr(line, mnemonic, src_op, dst_op)
 
         scratch_r = self._scratch_mem("scratch_r")
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
+        self._phase(statements, "Load source operand to scratch_a", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, src, "scratch_a", line, save_map
         )
 
+        self._phase(statements, "Load destination operand to scratch_b", "load_operand")
         if isinstance(dst, Immediate):
             raise TranslatorError("TEST destination must be register or memory", line)
         self._emit_store_operand_long_to_scratch(
@@ -1613,6 +1930,11 @@ class Translator:
         )
 
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Byte {byte_idx}: AND via and_lut (bitwise test)",
+                "lut_lookup",
+            )
             a_byte = self._scratch_mem("scratch_a", byte_idx)
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
@@ -1627,7 +1949,10 @@ class Translator:
             statements.append(mov("movzbl", and_lookup, Register("eax")))
             statements.append(mov("movb", Register("al"), r_byte))
 
+        self._phase(statements, "Update zero flag (ZF)", "update_flags")
         self._emit_update_zf(statements, line)
+
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, None, save_map)
         return statements
 
@@ -1662,9 +1987,11 @@ class Translator:
         def mov(mnem: str, src_op: Operand, dst_op: Operand) -> Instruction:
             return self._mov_instr(line, mnem, src_op, dst_op)
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Emit dispatch table in .data section
+        self._phase(statements, "Emit dispatch table (.data section)", "dispatch_table")
         statements.append(Directive(name="section", args=[".data"], line=instr.line))
         statements.append(Label(name=table_label, line=instr.line))
         statements.append(
@@ -1673,8 +2000,7 @@ class Translator:
         statements.append(Directive(name="long", args=[target_label], line=instr.line))
         statements.append(Directive(name="section", args=[".text"], line=instr.line))
 
-        # 2. Save temp registers
-
+        self._phase(statements, "Compute condition index from flags", "condition_eval")
         # 3. Compute condition index (0 = not taken, 1 = taken)
         if mnemonic in ("jl", "jnge"):
             # index = scratch_cmp_sign_lt
@@ -1774,20 +2100,26 @@ class Translator:
             )
 
         # 4. Load target address from dispatch table
+        self._phase(
+            statements, "Load target address from dispatch table", "condition_eval"
+        )
         dispatch_lookup = Memory(
             displacement=table_label, index=Register("eax"), scale=4
         )
         statements.append(mov("movl", dispatch_lookup, Register("eax")))
 
         # 5. Store target address to scratch_jcc_target
+        self._phase(statements, "Store target to scratch_jcc_target", "condition_eval")
         statements.append(
             mov("movl", Register("eax"), Memory(displacement="scratch_jcc_target"))
         )
 
         # 6. Restore temp registers
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, None, save_map)
 
         # 7. Indirect jump through scratch_jcc_target
+        self._phase(statements, "Indirect jump via scratch_jcc_target", "indirect_jump")
         statements.append(
             Instruction(
                 mnemonic="jmp",
@@ -1795,6 +2127,9 @@ class Translator:
                 line=line,
             )
         )
+
+        # Close the phase so the fallthrough label isn't attributed to it.
+        self._close_phase(statements)
 
         # 8. Fallthrough label (not-taken path continues here)
         statements.append(Label(name=fallthrough_label, line=line))
@@ -1832,9 +2167,11 @@ class Translator:
         def mov(mnem: str, src_op: Operand, dst_op: Operand) -> Instruction:
             return self._mov_instr(line, mnem, src_op, dst_op)
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Emit dispatch table in .data section
+        self._phase(statements, "Emit dispatch table (.data section)", "dispatch_table")
         statements.append(Directive(name="section", args=[".data"], line=instr.line))
         statements.append(Label(name=table_label, line=instr.line))
         statements.append(
@@ -1843,8 +2180,7 @@ class Translator:
         statements.append(Directive(name="long", args=[target_label], line=instr.line))
         statements.append(Directive(name="section", args=[".text"], line=instr.line))
 
-        # 2. Save temp registers
-
+        self._phase(statements, "Compute condition index from flags", "condition_eval")
         # 3. Compute condition index (0 = not taken, 1 = taken)
         if mnemonic in ("jb", "jc", "jnae"):
             # index = scratch_cmp_below
@@ -1944,20 +2280,26 @@ class Translator:
             )
 
         # 4. Load target address from dispatch table
+        self._phase(
+            statements, "Load target address from dispatch table", "condition_eval"
+        )
         dispatch_lookup = Memory(
             displacement=table_label, index=Register("eax"), scale=4
         )
         statements.append(mov("movl", dispatch_lookup, Register("eax")))
 
         # 5. Store target address to scratch_jcc_target
+        self._phase(statements, "Store target to scratch_jcc_target", "condition_eval")
         statements.append(
             mov("movl", Register("eax"), Memory(displacement="scratch_jcc_target"))
         )
 
         # 6. Restore temp registers
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, None, save_map)
 
         # 7. Indirect jump through scratch_jcc_target
+        self._phase(statements, "Indirect jump via scratch_jcc_target", "indirect_jump")
         statements.append(
             Instruction(
                 mnemonic="jmp",
@@ -1965,6 +2307,9 @@ class Translator:
                 line=line,
             )
         )
+
+        # Close the phase so the fallthrough label isn't attributed to it.
+        self._close_phase(statements)
 
         # 8. Fallthrough label (not-taken path continues here)
         statements.append(Label(name=fallthrough_label, line=line))
@@ -1999,9 +2344,11 @@ class Translator:
         scratch_r = self._scratch_mem("scratch_r")
         scratch_c = self._scratch_mem("scratch_c")
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Emit dispatch table in .data section
+        self._phase(statements, "Emit dispatch table (.data section)", "dispatch_table")
         statements.append(Directive(name="section", args=[".data"], line=line))
         statements.append(Label(name=table_label, line=line))
         statements.append(Directive(name="long", args=[fallthrough_label], line=line))
@@ -2009,14 +2356,21 @@ class Translator:
         statements.append(Directive(name="section", args=[".text"], line=line))
 
         # 2. Load ECX into scratch_b (avoid mem-to-mem)
+        self._phase(statements, "Load ECX to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, Register("ecx"), "scratch_b", line, save_map
         )
 
         # 3. Perform 32-bit DEC on scratch_b -> scratch_r
+        self._phase(statements, "Initialize borrow to 1 (decrement ECX)", "init")
         statements.append(mov("movb", Immediate(1), scratch_c))
 
         for byte_idx in range(4):
+            self._phase(
+                statements,
+                f"Decrement ECX byte {byte_idx}: Subtract via sub_lut",
+                "lut_lookup",
+            )
             b_byte = self._scratch_mem("scratch_b", byte_idx)
             r_byte = self._scratch_mem("scratch_r", byte_idx)
 
@@ -2039,6 +2393,11 @@ class Translator:
 
             # Calculate borrow for next byte (if not last byte)
             if byte_idx < 3:
+                self._phase(
+                    statements,
+                    f"Decrement ECX byte {byte_idx}: Propagate borrow",
+                    "carry_propagation",
+                )
                 # Borrow occurs if: original_byte == 0 AND current_borrow == 1
                 statements.append(mov("movzbl", b_byte, Register("eax")))
                 is_zero = Memory(
@@ -2056,6 +2415,7 @@ class Translator:
                 statements.append(mov("movb", Register("al"), scratch_c))
 
         # 4. Compute dispatch index: 1 if ecx!=0 else 0
+        self._phase(statements, "Compute dispatch index (ECX != 0?)", "condition_eval")
         self._emit_update_zf(statements, line)
         statements.append(
             mov("movzbl", Memory(displacement="scratch_cmp_eq"), Register("eax"))
@@ -2069,23 +2429,32 @@ class Translator:
         )
 
         # 5. Load target address from dispatch table
+        self._phase(
+            statements, "Load target address from dispatch table", "condition_eval"
+        )
         dispatch_lookup = Memory(
             displacement=table_label, index=Register("eax"), scale=4
         )
         statements.append(mov("movl", dispatch_lookup, Register("eax")))
 
         # 6. Store target address to scratch_jcc_target
+        self._phase(statements, "Store target to scratch_jcc_target", "condition_eval")
         statements.append(
             mov("movl", Register("eax"), Memory(displacement="scratch_jcc_target"))
         )
 
         # 7. Store decremented value back to ECX
+        self._phase(statements, "Write decremented value back to ECX", "write_result")
         statements.append(mov("movl", scratch_r, Register("ecx")))
 
         # 8. Restore temps except ecx (ecx holds the decremented value)
+        self._phase(
+            statements, "Restore temporary registers (except ECX)", "restore_temps"
+        )
         self._emit_restore_temps_except(statements, line, {"ecx"}, save_map)
 
         # 9. Indirect jump through scratch_jcc_target
+        self._phase(statements, "Indirect jump via scratch_jcc_target", "indirect_jump")
         statements.append(
             Instruction(
                 mnemonic="jmp",
@@ -2093,6 +2462,9 @@ class Translator:
                 line=line,
             )
         )
+
+        # Close the phase so the fallthrough label isn't attributed to it.
+        self._close_phase(statements)
 
         # 10. Fallthrough label (ecx == 0, exit loop)
         statements.append(Label(name=fallthrough_label, line=line))
@@ -2197,22 +2569,31 @@ class Translator:
         mul_accum = Memory(displacement="mul_accum")
         mul_accum_hi = Memory(displacement="mul_accum+4")
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Store EAX (multiplicand) to mul_op_a
+        self._phase(statements, "Store EAX (multiplicand) to mul_op_a", "load_operand")
         statements.append(mov("movl", save_map["eax"], Register("eax")))
         statements.append(mov("movl", Register("eax"), mul_op_a))
 
         # 2. Store operand (multiplier) to mul_op_b
+        self._phase(statements, "Store multiplier to mul_op_b", "load_operand")
         self._emit_store_operand_long_to_memory(
             statements, operand, mul_op_b, line, save_map
         )
 
         # 3. Clear 64-bit accumulator
+        self._phase(statements, "Clear 64-bit accumulator", "init")
         statements.append(mov("movl", Immediate(0), mul_accum))
         statements.append(mov("movl", Immediate(0), mul_accum_hi))
 
         # 4. Process 16 partial products (schoolbook multiplication)
+        self._phase(
+            statements,
+            "Compute 16 partial products via mul8 LUTs and accumulate",
+            "lut_lookup",
+        )
         for i in range(4):
             for j in range(4):
                 pos = i + j  # Output byte position (0-6)
@@ -2257,10 +2638,16 @@ class Translator:
                 self._emit_accum_add_byte(statements, pos + 1, hi_temp, 7, line)
 
         # 5. Load result: EAX = accum low 32 bits, EDX = accum high 32 bits
+        self._phase(
+            statements,
+            "Load result: EAX = low 32 bits, EDX = high 32 bits",
+            "write_result",
+        )
         statements.append(mov("movl", mul_accum, Register("eax")))
         statements.append(mov("movl", mul_accum_hi, Register("edx")))
 
         # 6. Restore ecx only (eax and edx contain the MUL result)
+        self._phase(statements, "Restore ECX", "restore_temps")
         self._emit_restore_temps_except(statements, line, {"eax", "edx"}, save_map)
 
         return statements
@@ -2738,23 +3125,30 @@ class Translator:
         scratch_r = Memory(displacement="scratch_r")
         scratch_t = Memory(displacement="scratch_t")
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Store dividend hi/lo (EDX:EAX) to div state
+        self._phase(
+            statements, "Store dividend EDX:EAX to division state", "load_operand"
+        )
         statements.append(mov("movl", save_map["edx"], Register("eax")))
         statements.append(mov("movl", Register("eax"), div_remainder))
         statements.append(mov("movl", save_map["eax"], Register("eax")))
         statements.append(mov("movl", Register("eax"), div_dividend_lo))
 
         # 2. Store divisor to div_divisor
+        self._phase(statements, "Store divisor", "load_operand")
         self._emit_store_operand_long_to_memory(
             statements, operand, div_divisor, line, save_map
         )
 
         # 3. Clear quotient
+        self._phase(statements, "Clear quotient", "init")
         statements.append(mov("movl", Immediate(0), div_quotient))
 
         # 3a. Division-by-zero check: if divisor == 0, trap
+        self._phase(statements, "Division-by-zero check", "condition_eval")
         # OR all 4 bytes of div_divisor together, then check is_zero
         statements.append(
             mov("movzbl", Memory(displacement="div_divisor"), Register("ecx"))
@@ -2856,6 +3250,9 @@ class Translator:
         statements.append(Label(name=divzero_ok_label, line=line))
 
         # 3b. Quotient overflow check: if dividend_hi >= divisor, trap
+        self._phase(
+            statements, "Quotient overflow check (EDX >= divisor)", "condition_eval"
+        )
         # Compute below = (dividend_hi < divisor) using CMP emulation.
         statements.append(mov("movl", div_divisor, Register("eax")))
         statements.append(mov("movl", Register("eax"), scratch_a))
@@ -2893,10 +3290,14 @@ class Translator:
         statements.append(Label(name=overflow_ok_label, line=line))
 
         # 4. Initialize quotient and loop counter (32 quotient bits)
+        self._phase(statements, "Initialize quotient and loop counter", "init")
         statements.append(mov("movl", Immediate(0), div_quotient))
         statements.append(mov("movl", Immediate(32), div_counter))
 
         # 5. Dispatch table for conditional subtract (based on scratch_cmp_below)
+        self._phase(
+            statements, "Emit dispatch tables for subtract/loop", "dispatch_table"
+        )
         statements.append(Directive(name="section", args=[".data"], line=line))
         statements.append(Label(name=dispatch_sub_label, line=line))
         # below=0: remainder >= divisor -> do_sub
@@ -2915,6 +3316,11 @@ class Translator:
         statements.append(Directive(name="section", args=[".text"], line=line))
 
         # 7. Long division loop (32 iterations)
+        self._phase(
+            statements,
+            "Division loop body (executes 32 times at runtime)",
+            "lut_lookup",
+        )
         statements.append(Label(name=loop_label, line=line))
 
         # 7a. inject = (div_dividend_lo >> 31) & 1
@@ -2938,17 +3344,27 @@ class Translator:
             operands=[Immediate(1), div_remainder],
             line=line,
         )
-        statements.extend(
-            self._translate_shl(shl_rem, update_flags=False, save_temps=False)
-        )
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(
+                self._translate_shl(shl_rem, update_flags=False, save_temps=False)
+            )
+        finally:
+            self._tracking_depth = old_depth
         add_inject = Instruction(
             mnemonic="addl",
             operands=[scratch_t, div_remainder],
             line=line,
         )
-        statements.extend(
-            self._translate_add(add_inject, update_flags=False, save_temps=False)
-        )
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(
+                self._translate_add(add_inject, update_flags=False, save_temps=False)
+            )
+        finally:
+            self._tracking_depth = old_depth
 
         # 7c. dividend_lo <<= 1
         shl_lo = Instruction(
@@ -2956,9 +3372,14 @@ class Translator:
             operands=[Immediate(1), div_dividend_lo],
             line=line,
         )
-        statements.extend(
-            self._translate_shl(shl_lo, update_flags=False, save_temps=False)
-        )
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(
+                self._translate_shl(shl_lo, update_flags=False, save_temps=False)
+            )
+        finally:
+            self._tracking_depth = old_depth
 
         # 7d. quotient <<= 1
         shl_q = Instruction(
@@ -2966,9 +3387,14 @@ class Translator:
             operands=[Immediate(1), div_quotient],
             line=line,
         )
-        statements.extend(
-            self._translate_shl(shl_q, update_flags=False, save_temps=False)
-        )
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(
+                self._translate_shl(shl_q, update_flags=False, save_temps=False)
+            )
+        finally:
+            self._tracking_depth = old_depth
 
         # 7e. Compare remainder with divisor (unsigned): below = remainder < divisor
         statements.append(mov("movl", div_divisor, Register("eax")))
@@ -3065,9 +3491,16 @@ class Translator:
         )
 
         # 8. Exit: load results and restore ECX only (EAX/EDX are outputs)
+        self._phase(
+            statements,
+            "Load results: EAX=quotient, EDX=remainder",
+            "write_result",
+        )
         statements.append(Label(name=exit_label, line=line))
         statements.append(mov("movl", div_quotient, Register("eax")))
         statements.append(mov("movl", div_remainder, Register("edx")))
+
+        self._phase(statements, "Restore ECX", "restore_temps")
         statements.append(mov("movl", save_map["ecx"], Register("ecx")))
 
         return statements
@@ -3100,9 +3533,11 @@ class Translator:
         def mov(mnem: str, src_op: Operand, dst_op: Operand) -> Instruction:
             return self._mov_instr(line, mnem, src_op, dst_op)
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 1. Emit dispatch table
+        self._phase(statements, "Emit dispatch table (.data section)", "dispatch_table")
         statements.append(Directive(name="section", args=[".data"], line=line))
         statements.append(Label(name=table_label, line=line))
         statements.append(Directive(name="long", args=[fallthrough_label], line=line))
@@ -3110,6 +3545,7 @@ class Translator:
         statements.append(Directive(name="section", args=[".text"], line=line))
 
         # 3. Compute condition index
+        self._phase(statements, "Compute condition index from flags", "condition_eval")
         if mnemonic in ("je", "jz"):
             # index = scratch_cmp_eq
             statements.append(
@@ -3137,20 +3573,26 @@ class Translator:
             )
 
         # 4. Load target address from dispatch table
+        self._phase(
+            statements, "Load target address from dispatch table", "condition_eval"
+        )
         dispatch_lookup = Memory(
             displacement=table_label, index=Register("eax"), scale=4
         )
         statements.append(mov("movl", dispatch_lookup, Register("eax")))
 
         # 5. Store target address
+        self._phase(statements, "Store target to scratch_jcc_target", "condition_eval")
         statements.append(
             mov("movl", Register("eax"), Memory(displacement="scratch_jcc_target"))
         )
 
         # 6. Restore temps
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, None, save_map)
 
         # 7. Indirect jump
+        self._phase(statements, "Indirect jump via scratch_jcc_target", "indirect_jump")
         statements.append(
             Instruction(
                 mnemonic="jmp",
@@ -3158,6 +3600,9 @@ class Translator:
                 line=line,
             )
         )
+
+        # Close the phase so the fallthrough label isn't attributed to it.
+        self._close_phase(statements)
 
         # 8. Fallthrough label
         statements.append(Label(name=fallthrough_label, line=line))
@@ -3200,7 +3645,9 @@ class Translator:
 
         # Shift by 0 is a no-op
         if shift_count == 0:
-            return []
+            statements: List[Statement] = []
+            self._phase(statements, "SHL by 0 (no output)", "nop")
+            return statements
 
         self._validate_32bit_operands(instr, [dst], "SHL")
 
@@ -3216,6 +3663,7 @@ class Translator:
 
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = (
             self._emit_save_temps(statements, line)
             if save_temps
@@ -3224,11 +3672,18 @@ class Translator:
 
         if isinstance(dst, Immediate):
             raise TranslatorError("SHL destination must be register or memory", line)
+
+        self._phase(statements, "Load operand to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
         # 2. Perform shift_count iterations of shift-left-by-1
+        self._phase(
+            statements,
+            f"Shift left by {shift_count}: Byte-by-byte via shl1_lut",
+            "lut_lookup",
+        )
         for _iteration in range(shift_count):
             # Initialize carry to 0
             statements.append(mov("movb", Immediate(0), scratch_c))
@@ -3281,9 +3736,11 @@ class Translator:
 
         # 3. Update ZF (scratch_cmp_eq) from result
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
 
         # 4. Store result to destination
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -3299,6 +3756,7 @@ class Translator:
 
         # 5. Restore temp registers (except destination if it's a temp reg)
         if save_temps:
+            self._phase(statements, "Restore temporary registers", "restore_temps")
             self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -3336,7 +3794,9 @@ class Translator:
 
         # Shift by 0 is a no-op
         if shift_count == 0:
-            return []
+            statements: List[Statement] = []
+            self._phase(statements, "SHR by 0 (no output)", "nop")
+            return statements
 
         self._validate_32bit_operands(instr, [dst], "SHR")
 
@@ -3352,15 +3812,23 @@ class Translator:
 
         dst_reg_name = dst.name if isinstance(dst, Register) else None
 
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         if isinstance(dst, Immediate):
             raise TranslatorError("SHR destination must be register or memory", line)
+
+        self._phase(statements, "Load operand to scratch_b", "load_operand")
         self._emit_store_operand_long_to_scratch(
             statements, dst, "scratch_b", line, save_map
         )
 
         # 2. Perform shift_count iterations of shift-right-by-1
+        self._phase(
+            statements,
+            f"Shift right by {shift_count}: Byte-by-byte via shr1_lut",
+            "lut_lookup",
+        )
         for _iteration in range(shift_count):
             # Initialize carry to 0
             statements.append(mov("movb", Immediate(0), scratch_c))
@@ -3419,9 +3887,11 @@ class Translator:
 
         # 3. Update ZF (scratch_cmp_eq) from result
         if update_flags:
+            self._phase(statements, "Update zero flag (ZF)", "update_flags")
             self._emit_update_zf(statements, line)
 
         # 4. Store result to destination
+        self._phase(statements, "Write result to destination", "write_result")
         if isinstance(dst, Register):
             statements.append(mov("movl", scratch_r, dst))
         elif isinstance(dst, Memory):
@@ -3435,6 +3905,7 @@ class Translator:
                 line,
             )
 
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst_reg_name, save_map)
 
         return statements
@@ -3462,17 +3933,29 @@ class Translator:
         # Special case: pushl %esp - must save original ESP before decrement
         is_push_esp = isinstance(src, Register) and src.name == "esp"
         if is_push_esp:
+            self._phase(
+                statements,
+                "Save original ESP (push %esp special case)",
+                "special",
+            )
             statements.append(mov("movl", Register("esp"), scratch_t))
 
         # 1. ESP -= 4 (create synthetic SUB and translate it)
+        self._phase(statements, "Decrement ESP by 4 (SUB expansion)", "lut_lookup")
         sub_instr = Instruction(
             mnemonic="subl",
             operands=[Immediate(4), Register("esp")],
             line=line,
         )
-        statements.extend(self._translate_sub(sub_instr, update_flags=False))
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(self._translate_sub(sub_instr, update_flags=False))
+        finally:
+            self._tracking_depth = old_depth
 
         # 2. Store value to (%esp)
+        self._phase(statements, "Store value to (%esp)", "write_result")
         esp_indirect = Memory(base=Register("esp"))
 
         if is_push_esp:
@@ -3528,15 +4011,20 @@ class Translator:
 
         # Special case: popl %esp => ESP = *(ESP), no +4 adjustment
         if isinstance(dst, Register) and dst.name == "esp":
+            self._phase(
+                statements, "POP %esp special case (no ESP increment)", "special"
+            )
             statements.append(mov("movl", esp_indirect, Register("esp")))
             return statements
 
         if isinstance(dst, Register):
             # 1. Load value from (%esp) to destination register
+            self._phase(statements, "Load value from (%esp)", "lut_lookup")
             statements.append(mov("movl", esp_indirect, dst))
         elif isinstance(dst, Memory):
             # Memory-to-memory: route through eax
             # Save eax (scratch_t2), load from stack into eax, store to memory dst, restore eax
+            self._phase(statements, "Load value from (%esp)", "lut_lookup")
             statements.append(mov("movl", Register("eax"), scratch_t2))
             statements.append(mov("movl", esp_indirect, Register("eax")))
             statements.append(mov("movl", Register("eax"), dst))
@@ -3548,7 +4036,13 @@ class Translator:
             operands=[Immediate(4), Register("esp")],
             line=line,
         )
-        statements.extend(self._translate_add(add_instr, update_flags=False))
+        self._phase(statements, "Increment ESP by 4 (ADD expansion)", "lut_lookup")
+        old_depth = self._tracking_depth
+        self._tracking_depth += 1
+        try:
+            statements.extend(self._translate_add(add_instr, update_flags=False))
+        finally:
+            self._tracking_depth = old_depth
 
         return statements
 
@@ -3581,13 +4075,16 @@ class Translator:
 
         # Handle LabelRef source: lea label, %reg -> movl $label, %reg
         if isinstance(src, LabelRef):
-            return [
+            statements: List[Statement] = []
+            self._phase(statements, "Compute effective address", "special")
+            statements.append(
                 Instruction(
                     mnemonic="movl",
                     operands=[Immediate(src.name, is_label=True), dst],
                     line=instr.line,
                 )
-            ]
+            )
+            return statements
 
         if not isinstance(src, Memory):
             raise TranslatorError(
@@ -3598,34 +4095,40 @@ class Translator:
         # Simple case: displacement only (no base, no index)
         if src.base is None and src.index is None:
             if src.displacement is not None:
-                return [
+                statements: List[Statement] = []
+                self._phase(statements, "Compute effective address", "special")
+                statements.append(
                     Instruction(
                         mnemonic="movl",
-                        operands=[
-                            Immediate(str(src.displacement), is_label=True),
-                            dst,
-                        ],
+                        operands=[Immediate(str(src.displacement), is_label=True), dst],
                         line=instr.line,
                     )
-                ]
+                )
+                return statements
             # No displacement either - effectively lea 0, %reg
-            return [
+            statements: List[Statement] = []
+            self._phase(statements, "Compute effective address", "special")
+            statements.append(
                 Instruction(
                     mnemonic="movl",
                     operands=[Immediate(0), dst],
                     line=instr.line,
                 )
-            ]
+            )
+            return statements
 
         # Simple case: base only, no index, no displacement -> just copy base
         if src.index is None and src.displacement is None and src.base is not None:
-            return [
+            statements: List[Statement] = []
+            self._phase(statements, "Compute effective address", "special")
+            statements.append(
                 Instruction(
                     mnemonic="movl",
                     operands=[src.base, dst],
                     line=instr.line,
                 )
-            ]
+            )
+            return statements
 
         # Complex LEA: need to compute base + index*scale + offset
         return self._translate_lea_complex(instr, src, dst)
@@ -3652,6 +4155,7 @@ class Translator:
 
         if base_is_temp:
             assert src.base is not None  # Type guard
+            self._phase(statements, "Save base/index registers", "save_temps")
             statements.append(mov("movl", src.base, lea_base_saved))
 
         if index_is_temp:
@@ -3662,12 +4166,16 @@ class Translator:
                 and src.base is not None
                 and src.index.name == src.base.name
             ):
+                if not base_is_temp:
+                    self._phase(statements, "Save base/index registers", "save_temps")
                 statements.append(mov("movl", src.index, lea_index_saved))
 
         # 1. Save temp registers (for ADD/SHL sub-translations)
+        self._phase(statements, "Save temporary registers", "save_temps")
         save_map = self._emit_save_temps(statements, line)
 
         # 2. Initialize scratch_r with displacement
+        self._phase(statements, "Initialize result with displacement", "init")
         if src.displacement is not None:
             disp = src.displacement
             if isinstance(disp, int) or (
@@ -3693,6 +4201,7 @@ class Translator:
 
         # 3. Add base if present
         if src.base is not None:
+            self._phase(statements, "Add base to result (via ADD)", "lut_lookup")
             # Get base value (from saved location if it was a temp reg)
             if base_is_temp:
                 base_src = Memory(displacement="lea_base_saved")
@@ -3720,9 +4229,14 @@ class Translator:
                 ],
                 line=instr.line,
             )
-            statements.extend(
-                self._translate_add(add_instr, update_flags=False, save_temps=False)
-            )
+            old_depth = self._tracking_depth
+            self._tracking_depth += 1
+            try:
+                statements.extend(
+                    self._translate_add(add_instr, update_flags=False, save_temps=False)
+                )
+            finally:
+                self._tracking_depth = old_depth
 
         # 4. Add index * scale if index is present
         if src.index is not None:
@@ -3764,6 +4278,7 @@ class Translator:
             # Multiply by scale using shift left
             # scale=1: no shift, scale=2: shl 1, scale=4: shl 2, scale=8: shl 3
             if scale == 2:
+                self._phase(statements, "Compute index * scale (via SHL)", "lut_lookup")
                 statements.append(
                     mov("movl", Memory(displacement="scratch_r"), Register("eax"))
                 )
@@ -3773,14 +4288,22 @@ class Translator:
                     operands=[Immediate(1), Memory(displacement="scratch_a")],
                     line=instr.line,
                 )
-                statements.extend(
-                    self._translate_shl(shl_instr, update_flags=False, save_temps=False)
-                )
+                old_depth = self._tracking_depth
+                self._tracking_depth += 1
+                try:
+                    statements.extend(
+                        self._translate_shl(
+                            shl_instr, update_flags=False, save_temps=False
+                        )
+                    )
+                finally:
+                    self._tracking_depth = old_depth
                 statements.append(mov("movl", scratch_r_saved, Register("eax")))
                 statements.append(
                     mov("movl", Register("eax"), Memory(displacement="scratch_r"))
                 )
             elif scale == 4:
+                self._phase(statements, "Compute index * scale (via SHL)", "lut_lookup")
                 statements.append(
                     mov("movl", Memory(displacement="scratch_r"), Register("eax"))
                 )
@@ -3790,14 +4313,22 @@ class Translator:
                     operands=[Immediate(2), Memory(displacement="scratch_a")],
                     line=instr.line,
                 )
-                statements.extend(
-                    self._translate_shl(shl_instr, update_flags=False, save_temps=False)
-                )
+                old_depth = self._tracking_depth
+                self._tracking_depth += 1
+                try:
+                    statements.extend(
+                        self._translate_shl(
+                            shl_instr, update_flags=False, save_temps=False
+                        )
+                    )
+                finally:
+                    self._tracking_depth = old_depth
                 statements.append(mov("movl", scratch_r_saved, Register("eax")))
                 statements.append(
                     mov("movl", Register("eax"), Memory(displacement="scratch_r"))
                 )
             elif scale == 8:
+                self._phase(statements, "Compute index * scale (via SHL)", "lut_lookup")
                 statements.append(
                     mov("movl", Memory(displacement="scratch_r"), Register("eax"))
                 )
@@ -3807,9 +4338,16 @@ class Translator:
                     operands=[Immediate(3), Memory(displacement="scratch_a")],
                     line=instr.line,
                 )
-                statements.extend(
-                    self._translate_shl(shl_instr, update_flags=False, save_temps=False)
-                )
+                old_depth = self._tracking_depth
+                self._tracking_depth += 1
+                try:
+                    statements.extend(
+                        self._translate_shl(
+                            shl_instr, update_flags=False, save_temps=False
+                        )
+                    )
+                finally:
+                    self._tracking_depth = old_depth
                 statements.append(mov("movl", scratch_r_saved, Register("eax")))
                 statements.append(
                     mov("movl", Register("eax"), Memory(displacement="scratch_r"))
@@ -3817,6 +4355,9 @@ class Translator:
             # scale=1: no shift needed
 
             # Add scaled index to result
+            self._phase(
+                statements, "Add scaled index to result (via ADD)", "lut_lookup"
+            )
             add_instr = Instruction(
                 mnemonic="addl",
                 operands=[
@@ -3825,14 +4366,21 @@ class Translator:
                 ],
                 line=instr.line,
             )
-            statements.extend(
-                self._translate_add(add_instr, update_flags=False, save_temps=False)
-            )
+            old_depth = self._tracking_depth
+            self._tracking_depth += 1
+            try:
+                statements.extend(
+                    self._translate_add(add_instr, update_flags=False, save_temps=False)
+                )
+            finally:
+                self._tracking_depth = old_depth
 
         # 5. Store result to destination
+        self._phase(statements, "Write result to destination", "write_result")
         statements.append(mov("movl", Memory(displacement="scratch_r"), dst))
 
         # 6. Restore temp registers (except destination)
+        self._phase(statements, "Restore temporary registers", "restore_temps")
         self._emit_restore_temps(statements, line, dst.name, save_map)
 
         return statements
